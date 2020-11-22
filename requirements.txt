@@ -1,0 +1,5 @@
+fastapi==0.61.2
+natasha==1.4.0
+stop-words==2018.7.23
+summa==1.2.0
+uvicorn==0.12.3
