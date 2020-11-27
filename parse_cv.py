@@ -2,7 +2,7 @@
 
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 
 from natasha import (
     Segmenter,
@@ -18,6 +18,10 @@ from natasha import (
 
 import re
 import json
+import shutil
+
+import textract
+import docx2txt
 
 from summa import keywords, summarizer
 from stop_words import get_stop_words
@@ -61,7 +65,9 @@ class NatashaProcessor:
 
         doc.segment(self.segmenter)
         doc.tag_ner(self.ner_tagger)
-        return [(sp.start, sp.stop, sp.text, sp.type) for sp in doc.spans]
+        return [
+            (sp.start, sp.stop, sp.text.replace("\n", " "), sp.type) for sp in doc.spans
+        ]
 
 
 def find_info(text, info_type):
@@ -85,6 +91,15 @@ def text_keywords(text, stopwords=STOP_WORDS):
         for keyword in keywords.keywords(text).split("\n")
         if keyword not in stopwords
     ]
+
+
+def parse_pdf(pdffile):
+    text = textract.process(pdffile, method="pdfminer")
+    return text.decode("utf8")
+
+
+def parse_docx(docxfile):
+    return docx2txt.process(docxfile)
 
 
 app = FastAPI()
@@ -115,11 +130,27 @@ def parse_text(text):
         data_dict["keywords"] = []
 
     try:
-        data_dict["ner"] = nat_proc.tag_ner(text)
+        data_dict["ner"] = nat_proc.tag_ner(text.replace("•", ""))
     except:
         data_dict["ner"] = []
 
     return data_dict
+
+
+@app.post("/parse_file")
+async def parse_file(file: UploadFile = File(...)):
+    filename = file.filename
+    file_type = filename.split(".")[-1]
+    if file_type == "pdf":
+        with open("resume.pdf", "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        return parse_text(parse_pdf("resume.pdf"))
+    elif file_type == "docx":
+        with open("resume.docx", "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        return parse_text(parse_docx(f"resume.docx"))
+    else:
+        return {}
 
 
 if __name__ == "__main__":
