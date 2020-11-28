@@ -3,6 +3,7 @@
 
 import uvicorn
 from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import HTMLResponse
 
 from natasha import (
     Segmenter,
@@ -23,14 +24,46 @@ import shutil
 import textract
 import docx2txt
 
+import numpy as np
+
 from summa import keywords, summarizer
 from stop_words import get_stop_words
+from eli5.lime import TextExplainer
+from nn_model import KerasTextClassifier
 
 
-# PHONE_REGEXP = "[\+\d]?(\d{2,3}[-\.\s]??\d{2,3}[-\.\s]??\d{4}|\(\d{3}\)\s*\d{3}[-\.\s]??\d{4}|\d{3}[-\.\s]??\d{4})"
-PHONE_REGEXP = "\+? {0,2}\d+ {0,2}[(-]?\d(?:[ \d]*\d)?[)-]? {0,2}\d+[/ -]?\d+[/ -]?\d+(?: *- *\d+)?"
+PHONE_REGEXP = "[\+\d]?(\d{2,3}[-\.\s]??\d{2,3}[-\.\s]??\d{4}|\(\d{3}\)\s*\d{3}[-\.\s]??\d{4}|\d{3}[-\.\s]??\d{4})"
+# PHONE_REGEXP = "\+? {0,2}\d+ {0,2}[(-]?\d(?:[ \d]*\d)?[)-]? {0,2}\d+[/ -]?\d+[/ -]?\d+(?: *- *\d+)?"
 EMAIL_REGEXP = "\w+@\w+\.\w+"
 URL_REGEXP = "((https?):((//)|(\\\\))+([\w\d:#@%/;$()~_?\+-=\\\.&](#!)?)*)"
+CLASSES = {
+    0: "Go разработчик",
+    1: "Главный инженер по сопровождению",
+    2: "Эксперт направления моделирования резервов",
+    3: "Data Engineer",
+    4: "Аналитик SAS",
+    5: "Аналитик банковских рисков",
+    6: "Главный инженер по тестированию (автоматизация)",
+    7: "Ведущий DevOps инженер",
+    8: "Дежурный инженер сопровождения банковских систем",
+    9: "Дизайнер мобильных интерфейсов",
+    10: "Разработчик Front-end (Middle)",
+    11: "Системный аналитик DWH",
+    12: "Аналитик системы принятия решений",
+    13: "Инженер DevOps",
+    14: "Главный разработчик Back-end Java",
+    15: "Разработчик RPA",
+    16: "Разработчик Front-end (REACT)",
+    17: "Системный аналитик",
+    18: "Архитектор",
+    19: "Системный аналитик (проекты розничного блока)",
+    20: "Системный аналитик (базы данных)",
+    21: "Аналитик (web приложения)",
+    22: "Бизнес-технолог",
+    23: "Frontend разработчик",
+    24: "Руководитель разработки JAVA",
+    25: "Senior Data Scientist",
+}
 
 STOP_WORDS = get_stop_words("ru") + [
     "январь",
@@ -104,6 +137,8 @@ def parse_docx(docxfile):
 
 app = FastAPI()
 nat_proc = NatashaProcessor()
+nn_model = KerasTextClassifier()
+nn_model.load()
 
 
 @app.post("/ping")
@@ -137,6 +172,36 @@ def parse_text(text):
     return data_dict
 
 
+@app.post("/predict")
+def predict(text):
+    predict_dict = {"predictions": []}
+    probabilities = nn_model.predict_proba([text])
+    predictions = np.argsort(probabilities, axis=1)[0, -3:].tolist()
+    res_dict = {CLASSES[pred]: float(probabilities[0, pred]) for pred in predictions}
+
+    predict_dict["predictions"].append(
+        {k: res_dict[k] for k in sorted(res_dict, key=res_dict.get, reverse=True)}
+    )
+    return predict_dict
+
+
+@app.post("/highlight")
+def highlight_text(text):
+    predict_dict = predict(text)
+
+    try:
+        te = TextExplainer(random_state=42, n_samples=1000)
+        te.fit(text, nn_model.predict_proba)
+        highlight_html = te.show_prediction(
+            target_names=[val for val in CLASSES.values()], top_targets=3, top=200
+        )
+        predict_dict["highlight"] = highlight_html
+    except:
+        predict_dict["highlight"] = None
+
+    return predict_dict
+
+
 @app.post("/parse_file")
 async def parse_file(file: UploadFile = File(...)):
     filename = file.filename
@@ -149,6 +214,118 @@ async def parse_file(file: UploadFile = File(...)):
         with open("resume.docx", "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         return parse_text(parse_docx(f"resume.docx"))
+    else:
+        return {}
+
+
+def return_resp(file, parsed_dict, highlighted_dict):
+    html_resp = """<!DOCTYPE HTML>
+        <html lang = "en">
+          <head>
+            <title>Резюме</title>
+            <meta charset = "UTF-8" />
+          </head>
+          <body>
+            <h1>Резюме {}</h1>
+            <form>
+              <fieldset>
+                <legend>Краткое содержание</legend>
+                <p>
+                  <label>Телефон</label>
+                  <input type = "text"
+                         id = "myText"
+                         value = "{}" />
+                </p>
+                <p>
+                  <label>Email</label>
+                  <input type = "text"
+                         id = "myText"
+                         value = "{}" />
+                </p>
+                <p>
+                  <label>Url</label>
+                  <textarea
+                          rows = "3"
+                          cols = "30">{}</textarea>
+                </p>
+                <p>
+                  <label>Краткое содержание</label>
+                  <textarea
+                          rows = "10"
+                          cols = "80">{}</textarea>
+                </p>
+                <p>
+                  <label>Навыки</label>
+                  <textarea
+                          rows = "10"
+                          cols = "80">{}</textarea>
+                </p>
+                <p>
+                  <label>Именованые сущности</label>
+                  <textarea
+                          rows = "10"
+                          cols = "80">{}</textarea>
+                </p>
+                <p>
+                  <label>Подходящие вакансии</label>
+                  <textarea
+                          rows = "10"
+                          cols = "80">{}</textarea>
+                </p>
+              </fieldset>
+            </form>
+            <form>
+            <legend>Детальная оценка (вероятности могут отличаться от "подходящих вакансий"!)</legend>
+            {}
+            </form>
+          </body>
+        </html>""".format(
+        file.filename,
+        "\n".join(parsed_dict["phone"]),
+        "\n".join(parsed_dict["email"]),
+        "\n".join(parsed_dict["url"]),
+        parsed_dict["summary"],
+        "\n".join(parsed_dict["keywords"]),
+        "\n".join(
+            [
+                "{} {}".format(ner_type, ner)
+                for start, end, ner, ner_type in parsed_dict["ner"]
+            ]
+        ),
+        "\n".join(
+            [
+                "Вакансия: {}, Score: {}".format(item[0], item[1])
+                for score in highlighted_dict["predictions"]
+                for item in list(score.items())
+            ]
+        ),
+        highlighted_dict["highlight"].data,
+    )
+    return html_resp
+
+
+@app.post("/estimate", response_class=HTMLResponse)
+async def parse_file(file: UploadFile = File(...)):
+    filename = file.filename
+    file_type = filename.split(".")[-1]
+    if file_type == "pdf":
+        with open("resume.pdf", "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        text = parse_pdf("resume.pdf")
+        parsed_dict = parse_text(text)
+        highlighted_dict = highlight_text(text)
+        html_resp = return_resp(file, parsed_dict, highlighted_dict)
+        # return {**parsed_dict, **highlighted_dict}
+        return HTMLResponse(content=html_resp, status_code=200)
+    elif file_type == "docx":
+        with open("resume.docx", "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        text = parse_docx("resume.docx")
+        parsed_dict = parse_text(text)
+        highlighted_dict = highlight_text(text)
+        html_resp = return_resp(file, parsed_dict, highlighted_dict)
+        return HTMLResponse(content=html_resp, status_code=200)
+        # return {**parsed_dict, **highlighted_dict}
     else:
         return {}
 
