@@ -1,6 +1,7 @@
 docx2txt==0.8
 eli5==0.10.1
 fastapi==0.61.2
+ipython==7.3.0
 natasha==1.4.0
 numpy==1.16.2
 pandas==0.25.3
